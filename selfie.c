@@ -3517,7 +3517,7 @@ uint64_t* zmalloc(uint64_t size) {
 
 void assert(uint64_t assert_expr, uint64_t lineno, const char* procedure_name) {
   if (assert_expr == 0) {
-    if (procedure_name == 0)
+    if (procedure_name == (char*) 0)
       printf("assertion failed at lineno : %ld\n", lineno);
     else
       printf("assertion failed at lineno : %ld, in function : %s\n", lineno, procedure_name);
