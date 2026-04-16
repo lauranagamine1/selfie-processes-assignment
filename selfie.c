@@ -1791,7 +1791,8 @@ uint64_t model    = 0; // flag for modeling code
 // number of instructions from context switch to timer interrupt
 // CAUTION: interrupting kernel code may cause race conditions
 // TODO: implement proper interrupt controller to turn interrupts on and off
-uint64_t TIMESLICE = 100000;
+uint64_t TIMESLICE = 100000; // antes: 100000
+uint64_t number_of_processes = 1;
 
 uint64_t TIMEROFF = 0; // must be 0 to turn off timer interrupt
 
@@ -11938,40 +11939,77 @@ uint64_t handle_exception(uint64_t* context) {
 uint64_t mipster(uint64_t* to_context) {
   uint64_t timeout;
   uint64_t* from_context;
+  uint64_t exit_code;
+  exit_code = 0;
 
   timeout = TIMESLICE;
 
-  while (1) {
+  while (used_contexts != (uint64_t*) 0) {
     from_context = mipster_switch(to_context, timeout);
 
     if (get_parent(from_context) != MY_CONTEXT) {
-      // dispatch exception handling to parent
       to_context = get_parent(from_context);
-
       timeout = TIMEROFF;
-    } else if (handle_exception(from_context) == EXIT)
-      return get_exit_code(from_context);
-    else {
-      // TODO: scheduler should go here
-      to_context = from_context;
+    } else if (handle_exception(from_context) == EXIT) {
+      exit_code = get_exit_code(from_context);
+
+      // elegir siguiente antes de eliminar
+      if (get_next_context(from_context) != (uint64_t*) 0)
+        to_context = get_next_context(from_context);
+      else if (get_prev_context(from_context) != (uint64_t*) 0)
+        to_context = get_prev_context(from_context);
+      else
+        to_context = (uint64_t*) 0; // último proceso
+
+      used_contexts = delete_context(from_context, used_contexts);
+
+      if (used_contexts == (uint64_t*) 0)
+        return exit_code; // todos terminaron
 
       timeout = TIMESLICE;
-    }
+    } else {
+  // rotar al siguiente contexto después de cualquier excepción manejada
+    if (get_next_context(from_context) != (uint64_t*) 0)
+      to_context = get_next_context(from_context);
+    else
+      to_context = used_contexts;
+
+    timeout = TIMESLICE;
   }
+  }
+
+  return exit_code;
 }
 
 uint64_t hypster(uint64_t* to_context) {
   uint64_t* from_context;
 
-  while (1) {
+  while (used_contexts != (uint64_t*) 0) {
     from_context = hypster_switch(to_context, TIMESLICE);
 
-    if (handle_exception(from_context) == EXIT)
-      return get_exit_code(from_context);
-    else
-      // TODO: scheduler should go here
-      to_context = from_context;
+    if (get_parent(from_context) != MY_CONTEXT) {
+      to_context = get_parent(from_context);
+    } else if (handle_exception(from_context) == EXIT) {
+      if (get_next_context(from_context) != (uint64_t*) 0)
+        to_context = get_next_context(from_context);
+      else if (get_prev_context(from_context) != (uint64_t*) 0)
+        to_context = get_prev_context(from_context);
+      else
+        to_context = (uint64_t*) 0;
+
+      used_contexts = delete_context(from_context, used_contexts);
+
+      if (used_contexts == (uint64_t*) 0)
+        return get_exit_code(from_context);
+    } else {
+      if (get_next_context(from_context) != (uint64_t*) 0)
+        to_context = get_next_context(from_context);
+      else
+        to_context = used_contexts;
+    }
   }
+
+  return 0;
 }
 
 uint64_t mixter(uint64_t* to_context, uint64_t mix) {
@@ -12081,6 +12119,7 @@ uint64_t mobster(uint64_t* to_context) {
 
 uint64_t selfie_run(uint64_t machine) {
   uint64_t exit_code;
+  uint64_t i;
 
   if (code_size == 0) {
     printf("%s: nothing to run, debug, or host\n", selfie_name);
@@ -12116,7 +12155,11 @@ uint64_t selfie_run(uint64_t machine) {
   reset_profiler();
   reset_microkernel();
 
-  init_memory(atoi(peek_argument(0)));
+  //init_memory(atoi(peek_argument(0)));
+  if (number_of_processes > 1)
+    init_memory(64);
+  else
+    init_memory(atoi(peek_argument(0)));
 
   current_context = create_context(MY_CONTEXT, 0);
 
@@ -12125,7 +12168,13 @@ uint64_t selfie_run(uint64_t machine) {
   boot_loader(current_context);
 
   // current_context is ready to run
-
+  
+  i = 1;
+  while (i < number_of_processes) {
+    create_context(MY_CONTEXT, 0);
+    boot_loader(used_contexts);  // used_contexts apunta al más reciente
+    i = i + 1;
+  }
   run = 1;
 
   printf("%s: %lu-bit %s executing %lu-bit RISC-U binary %s with %luMB physical memory", selfie_name,
@@ -12276,6 +12325,18 @@ uint64_t selfie(uint64_t extras) {
         selfie_output(get_argument());
       else if (string_compare(argument, "-s"))
         selfie_disassemble(0);
+
+      // agregamos -x (igual que -m pero con multiples procesos)
+      else if (string_compare(argument, "-x")) {
+        number_of_processes = atoi(get_argument());
+        return selfie_run(MIPSTER);
+      }
+      // agregamos -z
+      else if (string_compare(argument, "-z")) {
+          number_of_processes = atoi(get_argument());
+          return selfie_run(HYPSTER);
+      }
+
       else if (string_compare(argument, "-S"))
         selfie_disassemble(1);
       else if (string_compare(argument, "-l"))
